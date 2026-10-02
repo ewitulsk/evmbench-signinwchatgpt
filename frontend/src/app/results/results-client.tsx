@@ -19,6 +19,7 @@ import {
   VulnerabilityListPanel,
 } from "@/components/panels"
 import {
+  JobErrorNotice,
   MobileResultsView,
   ResultsGate,
   ResultsHeader,
@@ -37,6 +38,7 @@ import { useMounted } from "@/hooks/use-mounted"
 import { useVulnerabilityNavigation } from "@/hooks/use-vulnerability-navigation"
 import { readFilesFromInput } from "@/lib/file-loader"
 import { validateFileData } from "@/lib/file-validation"
+import { jobErrorMessage } from "@/lib/job-errors"
 import { mapJobVulnerabilities, setJobPublic } from "@/lib/jobs"
 import { normalizeFilePath } from "@/lib/paths"
 import { addRecentJob } from "@/lib/recent-jobs"
@@ -379,7 +381,7 @@ export default function ResultsClient() {
   ])
 
   const shouldGateResults = isRunComplete && !files
-  const statusError = jobError || job?.error
+  const statusError = jobError || (job ? jobErrorMessage(job) : null)
 
   return (
     <main className="flex min-h-screen w-screen flex-col md:h-screen">
@@ -395,7 +397,10 @@ export default function ResultsClient() {
       />
       {statusError && (
         <div className="border-b border-border/60 bg-destructive/10 px-4 py-2 text-xs text-destructive">
-          {statusError}
+          <JobErrorNotice
+            errorCode={jobError ? null : job?.error_code}
+            fallback={statusError}
+          />
         </div>
       )}
 

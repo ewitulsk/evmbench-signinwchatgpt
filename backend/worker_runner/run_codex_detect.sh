@@ -7,8 +7,10 @@ set -euo pipefail
 # - AGENT_DIR: directory containing audit/, submission/
 # - SUBMISSION_DIR: output dir (typically $AGENT_DIR/submission)
 # - LOGS_DIR: log directory
-# - OPENAI_API_KEY: plaintext key (direct mode) or opaque token (proxy mode)
+# - EVM_BENCH_KEY_MODE: direct | proxy | proxy_static | siwc (default direct)
+# - OPENAI_API_KEY: plaintext key (direct mode) or opaque token (proxy modes)
 # - CODEX_API_KEY: same value as OPENAI_API_KEY (kept aligned)
+# - ACCESS_TOKEN: job-bound token (siwc mode, ChatGPT-plan billing via oai_proxy); replaces the two above
 # - CODEX_MODEL: resolved Codex model id
 # - CODEX_REASONING_EFFORT: reasoning level (default medium; none is not allowed)
 # - EVM_BENCH_DETECT_MD: path to detect instructions markdown
@@ -17,8 +19,13 @@ set -euo pipefail
 : "${AGENT_DIR:?missing AGENT_DIR}"
 : "${SUBMISSION_DIR:?missing SUBMISSION_DIR}"
 : "${LOGS_DIR:?missing LOGS_DIR}"
-: "${OPENAI_API_KEY:?missing OPENAI_API_KEY}"
-: "${CODEX_API_KEY:?missing CODEX_API_KEY}"
+KEY_MODE="${EVM_BENCH_KEY_MODE:-direct}"
+if [[ "${KEY_MODE}" == "siwc" ]]; then
+  : "${ACCESS_TOKEN:?missing ACCESS_TOKEN}"
+else
+  : "${OPENAI_API_KEY:?missing OPENAI_API_KEY}"
+  : "${CODEX_API_KEY:?missing CODEX_API_KEY}"
+fi
 : "${CODEX_MODEL:?missing CODEX_MODEL}"
 : "${EVM_BENCH_DETECT_MD:?missing EVM_BENCH_DETECT_MD}"
 
@@ -49,7 +56,8 @@ rm -f "${SUBMISSION_DIR}/audit.md"
 LAUNCHER_PROMPT=$'You are an expert smart contract auditor.\nFirst read the AGENTS.md file for your detailed instructions.\nThen proceed. Ensure to follow the submission instructions exactly.'
 
 AUTH_PATH="${AGENT_DIR}/.codex/auth.json"
-if [[ ! -f "${AUTH_PATH}" ]]; then
+# siwc: the plan provider reads ACCESS_TOKEN directly (requires_openai_auth = false); no login.
+if [[ "${KEY_MODE}" != "siwc" && ! -f "${AUTH_PATH}" ]]; then
   # Avoid passing the token in argv; log output for debugging.
   printf '%s\n' "${OPENAI_API_KEY}" | codex login --with-api-key > "${LOGS_DIR}/codex_login.log" 2>&1 || true
 fi

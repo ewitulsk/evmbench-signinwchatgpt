@@ -24,7 +24,7 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 
 def get_token(session: str | None = Cookie(default=None)) -> Token:
     if auth_backend is None:
-        return Token(user_id='local', login='local', avatar_url=None)
+        return Token(user_id='local', login='local', avatar_url=None, provider='local')
 
     if not session:
         raise HTTPException(status_code=401, detail='Authorization required')

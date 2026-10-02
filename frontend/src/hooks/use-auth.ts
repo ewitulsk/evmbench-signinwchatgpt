@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react"
 import { type AuthUser, fetchMe } from "@/lib/auth"
-import { type FrontendConfig, fetchFrontendConfig } from "@/lib/integration"
+import {
+  type FrontendConfig,
+  fetchFrontendConfig,
+  normalizeFrontendConfig,
+} from "@/lib/integration"
 
 const FRONTEND_CONFIG_TTL_MS = 10000
-const DEFAULT_FRONTEND_CONFIG: FrontendConfig = {
-  // OSS-friendly default: if the backend config can't be fetched, don't gate usage on auth.
+// OSS-friendly default: if the backend config can't be fetched, don't gate usage on auth.
+const DEFAULT_FRONTEND_CONFIG: FrontendConfig = normalizeFrontendConfig({
   auth_enabled: false,
   key_predefined: false,
-}
+})
 let frontendConfigCache: { value: FrontendConfig; timestamp: number } | null =
   null
 let frontendConfigInFlight: Promise<FrontendConfig> | null = null
@@ -75,15 +79,8 @@ export function useAuth() {
     !(authUserCache || frontendConfigCache),
   )
   const [isConfigLoading, setIsConfigLoading] = useState(!frontendConfigCache)
-  const [isAuthEnabled, setIsAuthEnabled] = useState(
-    frontendConfigCache
-      ? frontendConfigCache.value.auth_enabled
-      : DEFAULT_FRONTEND_CONFIG.auth_enabled,
-  )
-  const [keyPredefined, setKeyPredefined] = useState(
-    frontendConfigCache
-      ? frontendConfigCache.value.key_predefined
-      : DEFAULT_FRONTEND_CONFIG.key_predefined,
+  const [config, setConfig] = useState<FrontendConfig>(
+    frontendConfigCache ? frontendConfigCache.value : DEFAULT_FRONTEND_CONFIG,
   )
 
   useEffect(() => {
@@ -91,14 +88,13 @@ export function useAuth() {
 
     const loadUser = async () => {
       try {
-        const config = await getFrontendConfig()
+        const nextConfig = await getFrontendConfig()
         if (isMounted) {
-          setIsAuthEnabled(config.auth_enabled)
-          setKeyPredefined(config.key_predefined)
+          setConfig(nextConfig)
           setIsConfigLoading(false)
         }
 
-        if (!config.auth_enabled) {
+        if (!nextConfig.auth_enabled) {
           if (isMounted) {
             authUserCache = null
             setUser(null)
@@ -130,12 +126,22 @@ export function useAuth() {
     }
   }, [])
 
+  const isAuthEnabled = config.auth_enabled
+
   return {
     user,
     isLoading,
     isConfigLoading,
     isAuthEnabled,
-    keyPredefined,
+    keyPredefined: config.key_predefined,
     isAuthorized: !isAuthEnabled || Boolean(user),
+    authProvider: config.auth_provider,
+    provider: user?.provider ?? null,
+    planUsage: user?.plan_usage ?? "unavailable",
+    planUsageAvailable: config.plan_usage_available,
+    apiKeyModeAvailable: config.api_key_mode_available,
+    modelDiscovery: config.model_discovery,
+    manageUsageUrl: config.manage_usage_url,
+    learnMoreUrl: config.plan_usage_learn_more_url,
   }
 }

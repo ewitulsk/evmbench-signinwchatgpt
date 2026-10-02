@@ -6,7 +6,7 @@ import orjson
 from aio_pika.abc import AbstractIncomingMessage, Arguments
 from loguru import logger
 
-from api.core.const import MODEL_REASONING_EFFORTS
+from api.core.const import MODEL_REASONING_EFFORTS, SUPPORTED_REASONING_EFFORTS
 from instancer.backends.abc import StartWorkerOptions
 from instancer.core.config import settings
 from instancer.core.impl import workers_backend
@@ -112,7 +112,9 @@ async def handle_job_start_message(message: AbstractIncomingMessage) -> None:
         await message.reject(requeue=False)
         return
 
-    if not isinstance(reasoning_effort, str) or reasoning_effort not in MODEL_REASONING_EFFORTS.get(model, ()):
+    # Discovered (non-curated) models were already validated against the user's catalog by the API.
+    allowed_efforts = MODEL_REASONING_EFFORTS.get(model, SUPPORTED_REASONING_EFFORTS)
+    if not isinstance(reasoning_effort, str) or reasoning_effort not in allowed_efforts:
         logger.warning(f'Invalid reasoning_effort for job_id={job_id}')
         await message.reject(requeue=False)
         return

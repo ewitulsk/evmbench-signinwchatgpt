@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 from contextlib import suppress
 from http import HTTPStatus
@@ -13,10 +14,16 @@ from api.core.config import settings
 from api.core.const import ALLOWED_MODELS
 from api.core.deps import OptionalTokenDep, TokenDep, get_db
 from api.core.impl import auth_backend
+from api.core.model_catalog import CatalogModel, CatalogUnavailableError, curated_catalog, find_model
 from api.core.rabbitmq import RabbitMQPublisher, get_rabbitmq_publisher
+from api.core.tokens import Token
 from api.models.job import Job, JobStatus
+from api.routers.v1.models import api_key_catalog, plan_catalog
 from api.schemas.job import JobHistoryItem, JobStatusResponse, PatchJobForm, StartJobForm, StartJobResponse
 from api.secrets.impl import secret_storage
+from api.siwc.credentials import PlanUsageUnavailableError, ReauthRequiredError
+from api.siwc.job_token import JobTokenClaims, issue_job_token
+from api.siwc.oauth import OAuthError
 from api.util.aes_gcm import derive_key, encrypt_token
 from api.util.secrets_bundle import build_secret_bundle
 
@@ -69,6 +76,52 @@ async def _require_no_active_job(*, session: AsyncSession, user_id: str) -> None
 def _require_allowed_model(model: str) -> None:
     if model not in ALLOWED_MODELS:
         raise HTTPException(status_code=401, detail='Model is not allowed')
+
+
+def _require_reasoning_effort(model: CatalogModel, effort: str) -> None:
+    if effort not in model.reasoning_efforts:
+        raise HTTPException(status_code=412, detail='Reasoning level is not supported by the selected model')
+
+
+async def _resolve_api_key_model(form: StartJobForm) -> CatalogModel:
+    curated = find_model(curated_catalog(), form.model)
+    if curated is not None:
+        return curated
+    # Unknown models are rejected before any upstream call unless API-key discovery is on.
+    if settings.BACKEND_MODEL_DISCOVERY != 'all' or not form.openai_key:
+        _require_allowed_model(form.model)
+    model = find_model(await api_key_catalog(form.openai_key), form.model)
+    if model is None:
+        raise HTTPException(status_code=401, detail='Model is not allowed')
+    _require_reasoning_effort(model, form.reasoning_effort)
+    return model
+
+
+async def _resolve_plan_model(*, session: AsyncSession, token: Token, form: StartJobForm) -> CatalogModel:
+    if token.provider != 'chatgpt':
+        raise HTTPException(status_code=403, detail='Sign in with ChatGPT to bill audits to your ChatGPT plan')
+    try:
+        catalog = await plan_catalog(session, token)
+    except ReauthRequiredError as err:
+        raise HTTPException(status_code=401, detail='Reconnect ChatGPT to continue using your plan') from err
+    except PlanUsageUnavailableError as err:
+        raise HTTPException(
+            status_code=403,
+            detail='ChatGPT plan usage was not granted; sign in with ChatGPT again or use an API key',
+        ) from err
+    except (CatalogUnavailableError, OAuthError) as err:
+        raise HTTPException(
+            status_code=503,
+            detail='Unable to load your ChatGPT plan models; try again shortly',
+        ) from err
+
+    model = find_model(catalog, form.model)
+    if model is None:
+        raise HTTPException(status_code=401, detail='Model is not allowed')
+    if not model.available:
+        raise HTTPException(status_code=412, detail='This model is not available on your ChatGPT plan')
+    _require_reasoning_effort(model, form.reasoning_effort)
+    return model
 
 
 def _resolve_openai_key(form: StartJobForm) -> str | None:
@@ -130,26 +183,43 @@ async def start_job(
     token: TokenDep,
 ) -> StartJobResponse:
     await _require_no_active_job(session=session, user_id=token.user_id)
-    _require_allowed_model(form.model)
-
-    use_proxy_static = settings.BACKEND_USE_PROXY_STATIC_KEY
-    use_proxy_tokens = settings.BACKEND_OAI_KEY_MODE == 'proxy'
-    openai_key = _resolve_openai_key(form)
-
-    if not use_proxy_static and not openai_key:
-        raise HTTPException(status_code=412, detail='openai_key is required')
-
-    await _maybe_validate_user_key(form=form, openai_key=openai_key)
-
     job_id = uuid.uuid4()
+
+    if form.billing_source == 'chatgpt_plan':
+        model = await _resolve_plan_model(session=session, token=token, form=form)
+        if settings.OAI_PROXY_AES_KEY is None:
+            raise HTTPException(status_code=500, detail='OAI_PROXY_AES_KEY must be set for ChatGPT plan usage')
+        # The worker never sees a ChatGPT token: oai_proxy swaps this job-bound token for one.
+        openai_token = issue_job_token(
+            JobTokenClaims(
+                user_id=token.user_id,
+                job_id=job_id,
+                model=model.codex_model,
+                exp=int(time.time()) + settings.BACKEND_SIWC_JOB_TOKEN_TTL_SECONDS,
+            ),
+            secret=settings.OAI_PROXY_AES_KEY.get_secret_value(),
+        )
+        key_mode = 'siwc'
+    else:
+        model = await _resolve_api_key_model(form)
+
+        use_proxy_static = settings.BACKEND_USE_PROXY_STATIC_KEY
+        use_proxy_tokens = settings.BACKEND_OAI_KEY_MODE in {'proxy', 'siwc'}
+        openai_key = _resolve_openai_key(form)
+
+        if not use_proxy_static and not openai_key:
+            raise HTTPException(status_code=412, detail='openai_key is required')
+
+        await _maybe_validate_user_key(form=form, openai_key=openai_key)
+
+        openai_token, key_mode = _encode_openai_token(
+            openai_key=openai_key or '',
+            use_proxy_static=use_proxy_static,
+            use_proxy_tokens=use_proxy_tokens,
+        )
+
     secret_ref = os.urandom(32).hex()
     result_token = os.urandom(32).hex()
-
-    openai_token, key_mode = _encode_openai_token(
-        openai_key=openai_key or '',
-        use_proxy_static=use_proxy_static,
-        use_proxy_tokens=use_proxy_tokens,
-    )
 
     try:
         bundle = build_secret_bundle(upload=form.file, openai_token=openai_token, key_mode=key_mode)
@@ -161,7 +231,9 @@ async def start_job(
             user_id=token.user_id,
             secret_ref=secret_ref,
             result_token=result_token,
-            model=form.model,
+            model=model.id,
+            model_display_name=model.label[:128],
+            billing_source=form.billing_source,
             reasoning_effort=form.reasoning_effort,
             file_name=(form.file.filename or 'files.zip')[:128],
         )
@@ -172,7 +244,7 @@ async def start_job(
             await publisher.publish_job_start(
                 job_id=str(job_id),
                 secret_ref=secret_ref,
-                model=form.model,
+                model=model.id,
                 reasoning_effort=form.reasoning_effort,
                 result_token=result_token,
             )

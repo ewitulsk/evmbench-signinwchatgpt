@@ -1,3 +1,4 @@
+export { JobErrorNotice } from "./job-error-notice"
 export { JobStatusBadge, JobStatusDot } from "./job-status-badge"
 export { MobileResultsView } from "./mobile-results-view"
 export { ResultsGate } from "./results-gate"

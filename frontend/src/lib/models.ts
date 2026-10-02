@@ -15,3 +15,14 @@ export function getReasoningEfforts(model: string): string[] {
 export function reasoningLabel(effort?: string | null): string {
   return effort ? (reasoningLabels[effort] ?? effort) : "Model default"
 }
+
+export function getModelLabel(model: string): string | null {
+  return models.find(({ id }) => id === model)?.label ?? null
+}
+
+export function jobModelLabel(
+  job: { model: string; model_display_name?: string | null } | null,
+): string {
+  if (!job) return "—"
+  return job.model_display_name || getModelLabel(job.model) || job.model
+}

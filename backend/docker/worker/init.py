@@ -6,6 +6,7 @@ except ImportError:
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -40,12 +41,19 @@ DETECT_MD_PATH = RUNNER_DIR / 'detect.md'
 MODEL_MAP_PATH = RUNNER_DIR / 'model_map.json'
 CODEX_RUNNER_SH = RUNNER_DIR / 'run_codex_detect.sh'
 
+KEY_MODES = {'direct', 'proxy', 'proxy_static', 'siwc'}
+# ChatGPT-plan errors surfaced by Codex; oai_proxy records the same codes, this is the fallback.
+_SUBSCRIPTION_SHARING_RE = re.compile(r'subscription_sharing_([a-z_]+)')
 
-def _write_codex_proxy_config(*, home: Path) -> None:
+
+def _write_codex_proxy_config(*, home: Path, siwc: bool = False) -> None:
     """Configure Codex to call our local proxy provider.
 
     In proxy-token mode, OPENAI_API_KEY is not an OpenAI key; it's an opaque token.
     Codex is pointed at oai_proxy which decrypts the token and forwards upstream.
+
+    In siwc mode (ChatGPT-plan billing), ACCESS_TOKEN is a job-bound token; oai_proxy swaps it for the
+    user's ChatGPT access token and refreshes that as needed, so Codex never handles OAuth.
     """
     if not OAI_PROXY_BASE_URL:
         msg = 'Missing OAI_PROXY_BASE_URL for proxy mode'
@@ -58,15 +66,69 @@ def _write_codex_proxy_config(*, home: Path) -> None:
     config_dir = home / '.codex'
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / 'config.toml'
-    config = (
-        'model_provider = "proxy"\n\n'
-        '[model_providers.proxy]\n'
-        'name = "proxy"\n'
-        f'base_url = "{base_url}"\n'
-        f'wire_api = "{OAI_PROXY_WIRE_API}"\n'
-        'env_key = "OPENAI_API_KEY"\n'
-    )
+    if siwc:
+        config = (
+            'model_provider = "openai_chatgpt_plan"\n\n'
+            '[model_providers.openai_chatgpt_plan]\n'
+            'name = "openai_chatgpt_plan"\n'
+            f'base_url = "{base_url}"\n'
+            'wire_api = "responses"\n'
+            'env_key = "ACCESS_TOKEN"\n'
+            'requires_openai_auth = false\n'
+            'supports_websockets = false\n'
+        )
+    else:
+        config = (
+            'model_provider = "proxy"\n\n'
+            '[model_providers.proxy]\n'
+            'name = "proxy"\n'
+            f'base_url = "{base_url}"\n'
+            f'wire_api = "{OAI_PROXY_WIRE_API}"\n'
+            'env_key = "OPENAI_API_KEY"\n'
+        )
     config_path.write_text(config, encoding='utf-8')
+
+
+def _find_error_code(text: str) -> str | None:
+    match = _SUBSCRIPTION_SHARING_RE.search(text or '')
+    return match.group(1) if match else None
+
+
+def _agent_failure_summary(limit: int = 1000) -> str:
+    """Last error Codex reported in agent.log (its `--json` event stream), for the job's error message."""
+    try:
+        lines = (LOGS_DIR / 'agent.log').read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return ''
+
+    fatal: list[str] = []
+    other: list[str] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get('type') == 'turn.failed' and isinstance(event.get('error'), dict):
+            fatal.append(str(event['error'].get('message') or ''))
+        elif event.get('type') == 'error':
+            fatal.append(str(event.get('message') or ''))
+        elif isinstance(event.get('item'), dict) and event['item'].get('type') == 'error':
+            other.append(str(event['item'].get('message') or ''))
+
+    messages = [m for m in fatal if m] or [m for m in other if m and 'Model metadata' not in m]
+    if not messages and lines:
+        # Not JSON (e.g. Codex failed before starting): fall back to the raw tail.
+        messages = [line for line in lines[-5:] if line.strip()]
+    return '\n'.join(dict.fromkeys(messages))[-limit:]
+
+
+def _agent_error_code() -> str | None:
+    try:
+        return _find_error_code((LOGS_DIR / 'agent.log').read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        return None
 
 
 def _load_model_map() -> dict[str, str]:
@@ -162,17 +224,24 @@ def _extract_json_payload(audit_md: str) -> dict:
 
 def _run_codex_detect(*, openai_token: str, key_mode: str) -> Path:
     env = os.environ.copy()
-    env['OPENAI_API_KEY'] = openai_token
-    # Codex CLI supports using CODEX_API_KEY; keep it aligned to avoid surprises.
-    env['CODEX_API_KEY'] = openai_token
+    if key_mode == 'siwc':
+        # Never export the job token as an API key: Codex must only use the configured plan provider.
+        env.pop('OPENAI_API_KEY', None)
+        env.pop('CODEX_API_KEY', None)
+        env['ACCESS_TOKEN'] = openai_token
+    else:
+        env['OPENAI_API_KEY'] = openai_token
+        # Codex CLI supports using CODEX_API_KEY; keep it aligned to avoid surprises.
+        env['CODEX_API_KEY'] = openai_token
+    env['EVM_BENCH_KEY_MODE'] = key_mode
     env['HOME'] = str(AGENT_DIR)
     env['AGENT_DIR'] = str(AGENT_DIR)
     env['SUBMISSION_DIR'] = str(SUBMISSION_DIR)
     env['LOGS_DIR'] = str(LOGS_DIR)
 
     # Proxy-token mode: write Codex config to route requests through oai_proxy.
-    if key_mode in {'proxy', 'proxy_static'}:
-        _write_codex_proxy_config(home=AGENT_DIR)
+    if key_mode in {'proxy', 'proxy_static', 'siwc'}:
+        _write_codex_proxy_config(home=AGENT_DIR, siwc=key_mode == 'siwc')
 
     if not DETECT_MD_PATH.exists():
         msg = f'Missing detect instructions: {DETECT_MD_PATH}'
@@ -198,7 +267,8 @@ def _run_codex_detect(*, openai_token: str, key_mode: str) -> Path:
     )
     (LOGS_DIR / 'runner.log').write_text(proc.stdout or '', encoding='utf-8')
     if proc.returncode != 0:
-        msg = f'Codex runner failed with code={proc.returncode}:\n{proc.stdout}'
+        detail = (proc.stdout or '').strip() or _agent_failure_summary()
+        msg = f'Codex runner failed with code={proc.returncode}:\n{detail}'
         raise RuntimeError(msg)
 
     audit_md_path = SUBMISSION_DIR / 'audit.md'
@@ -239,7 +309,7 @@ def _unpack_bundle(bundle: bytes, work_dir: Path) -> tuple[Path, str, str]:
     if not isinstance(key_mode, str):
         key_mode = 'direct'
     key_mode = key_mode.strip().lower()
-    if key_mode not in {'direct', 'proxy', 'proxy_static'}:
+    if key_mode not in KEY_MODES:
         key_mode = 'direct'
 
     if not upload_zip_path.exists():
@@ -295,6 +365,9 @@ async def main() -> None:
                 'status': 'failed',
                 'error': str(err),
             }
+            error_code = _agent_error_code() or _find_error_code(str(err))
+            if error_code:
+                report_payload['error_code'] = error_code
             logger.opt(exception=err).error('Unable to run detect-only agent')
 
     logger.info(f'{report_payload=}')

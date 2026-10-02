@@ -4,6 +4,18 @@ import type { Severity, Vulnerability } from "@/types"
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed"
 
+export type BillingSource = "api_key" | "chatgpt_plan"
+
+export type JobErrorCode =
+  | "usage_limit_exceeded"
+  | "usage_unavailable"
+  | "user_not_eligible"
+  | "unsupported_capability"
+  | "invalid_user"
+  | "reauth_required"
+  | "model_unavailable"
+  | "plan_usage_unavailable"
+
 export interface StartJobResponse {
   job_id: string
   status: JobStatus
@@ -15,7 +27,10 @@ export interface JobResponse {
   result: JobReport | null
   error: string | null
   model: string
+  model_display_name?: string | null
   reasoning_effort: string | null
+  billing_source?: BillingSource | null
+  error_code?: JobErrorCode | (string & {}) | null
   file_name: string
   public: boolean
   queue_position: number | null
@@ -92,16 +107,29 @@ export async function setJobPublic(
   return response.json()
 }
 
-export async function startJob(
-  file: File,
-  model: string,
-  openaiKey: string,
-  reasoningEffort?: string,
-): Promise<StartJobResponse> {
+export interface StartJobParams {
+  file: File
+  model: string
+  billingSource: BillingSource
+  openaiKey?: string
+  reasoningEffort?: string
+}
+
+export async function startJob({
+  file,
+  model,
+  billingSource,
+  openaiKey,
+  reasoningEffort,
+}: StartJobParams): Promise<StartJobResponse> {
   const body = new FormData()
   body.append("file", file)
   body.append("model", model)
-  body.append("openai_key", openaiKey)
+  body.append("billing_source", billingSource)
+  // Plan-billed jobs never carry an API key.
+  if (billingSource === "api_key" && openaiKey) {
+    body.append("openai_key", openaiKey)
+  }
   if (reasoningEffort) body.append("reasoning_effort", reasoningEffort)
 
   const response = await fetch(`${API_BASE}/v1/jobs/start`, {

@@ -35,12 +35,17 @@ class Job(Base):
 
     user_id: Mapped[str] = mapped_column(String(128))
     model: Mapped[str] = mapped_column(String(64))
+    model_display_name: Mapped[str | None] = mapped_column(String(128))
+    # 'api_key' or 'chatgpt_plan'; NULL for jobs created before billing sources existed.
+    billing_source: Mapped[str | None] = mapped_column(String(16))
     reasoning_effort: Mapped[str | None] = mapped_column(String(16))
     file_name: Mapped[str] = mapped_column(String(128))
     secret_ref: Mapped[str | None] = mapped_column(String(64))
 
     result: Mapped[dict | None] = mapped_column(JSONB)
     result_error: Mapped[str | None] = mapped_column(Text)
+    # Machine-readable failure reason (e.g. usage_limit_exceeded); first writer wins.
+    error_code: Mapped[str | None] = mapped_column(String(64))
     result_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result_token: Mapped[str | None] = mapped_column(String(64))
 
