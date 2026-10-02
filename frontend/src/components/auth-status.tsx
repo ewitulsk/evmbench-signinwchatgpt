@@ -1,6 +1,11 @@
 "use client"
 
-import { Logout01Icon, WorkHistoryIcon } from "@hugeicons/core-free-icons"
+import {
+  DashboardSpeed01Icon,
+  Logout01Icon,
+  UserSwitchIcon,
+  WorkHistoryIcon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import Image from "next/image"
 import Link from "next/link"
@@ -12,15 +17,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useAuth } from "@/hooks/use-auth"
-import { API_BASE } from "@/lib/api"
+import { LOGOUT_URL, SIGN_IN_URL, SWITCH_ACCOUNT_URL } from "@/lib/auth"
 import { cn } from "@/lib/utils"
+import openaiSmall from "../../public/openai-small.svg"
 
 interface AuthStatusProps {
   className?: string
 }
 
 export function AuthStatus({ className }: AuthStatusProps) {
-  const { user, isLoading, isAuthEnabled } = useAuth()
+  const { user, isLoading, isAuthEnabled, authProvider, manageUsageUrl } =
+    useAuth()
 
   if (isLoading || !isAuthEnabled) return null
 
@@ -31,11 +38,26 @@ export function AuthStatus({ className }: AuthStatusProps) {
           Authorization required
         </span>
         <Button asChild size="sm" variant="outline">
-          <a href={`${API_BASE}/v1/auth/`}>Authorize</a>
+          {authProvider === "chatgpt" ? (
+            <a href={SIGN_IN_URL}>
+              <Image
+                src={openaiSmall}
+                alt=""
+                aria-hidden
+                data-icon="inline-start"
+                className="size-4 dark:invert"
+              />
+              Continue with ChatGPT
+            </a>
+          ) : (
+            <a href={SIGN_IN_URL}>Authorize</a>
+          )}
         </Button>
       </div>
     )
   }
+
+  const isChatGPTUser = user.provider === "chatgpt"
 
   const avatar = user.avatar_url ? (
     <Image
@@ -76,11 +98,29 @@ export function AuthStatus({ className }: AuthStatusProps) {
             History
           </Link>
         </DropdownMenuItem>
+        {isChatGPTUser && (
+          <>
+            <DropdownMenuItem asChild>
+              <a
+                href={manageUsageUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2"
+              >
+                <HugeiconsIcon icon={DashboardSpeed01Icon} strokeWidth={2} />
+                Manage usage
+              </a>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <a href={SWITCH_ACCOUNT_URL} className="flex items-center gap-2">
+                <HugeiconsIcon icon={UserSwitchIcon} strokeWidth={2} />
+                Switch account
+              </a>
+            </DropdownMenuItem>
+          </>
+        )}
         <DropdownMenuItem asChild>
-          <a
-            href={`${API_BASE}/v1/auth/logout`}
-            className="flex items-center gap-2"
-          >
+          <a href={LOGOUT_URL} className="flex items-center gap-2">
             <HugeiconsIcon icon={Logout01Icon} strokeWidth={2} />
             Log out
           </a>

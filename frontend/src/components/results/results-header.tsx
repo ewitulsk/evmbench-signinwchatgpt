@@ -30,10 +30,12 @@ import {
 } from "@/components/ui/select"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import { PATH_PREFIX } from "@/lib/api"
+import { jobErrorMessage } from "@/lib/job-errors"
 import { isJobActive } from "@/lib/job-status"
 import type { JobResponse } from "@/lib/jobs"
-import { reasoningLabel } from "@/lib/models"
+import { jobModelLabel, reasoningLabel } from "@/lib/models"
 import { formatDateTime } from "@/lib/time"
+import { JobErrorNotice } from "./job-error-notice"
 import { JobStatusBadge, JobStatusDot } from "./job-status-badge"
 
 interface ResultsHeaderProps {
@@ -51,10 +53,12 @@ function JobDetailsContent({
   jobId,
   job,
   statusError,
+  statusErrorCode,
 }: {
   jobId: string
   job: JobResponse | null
   statusError: string | null
+  statusErrorCode: string | null
 }) {
   return (
     <div className="min-w-0 space-y-3">
@@ -74,7 +78,7 @@ function JobDetailsContent({
           </>
         )}
         <span className="text-muted-foreground">Model</span>
-        <span>{job?.model ?? "—"}</span>
+        <span>{jobModelLabel(job)}</span>
         <span className="text-muted-foreground">Reasoning</span>
         <span>{job ? reasoningLabel(job.reasoning_effort) : "—"}</span>
         <span className="text-muted-foreground">File</span>
@@ -97,7 +101,7 @@ function JobDetailsContent({
         )}
       </div>
       {statusError && (
-        <div className="text-destructive text-xs">{statusError}</div>
+        <JobErrorNotice errorCode={statusErrorCode} fallback={statusError} />
       )}
     </div>
   )
@@ -200,7 +204,8 @@ export function ResultsHeader({
   isAuthEnabled = true,
 }: ResultsHeaderProps) {
   const isMobile = useMediaQuery("(max-width: 768px)")
-  const statusError = error || job?.error || null
+  const statusError = error || (job ? jobErrorMessage(job) : null)
+  const statusErrorCode = error ? null : (job?.error_code ?? null)
   const sharePath = jobId ? `${PATH_PREFIX}/results?job_id=${jobId}` : ""
   const isSharePublic = !isAuthEnabled || Boolean(job?.public)
 
@@ -260,6 +265,7 @@ export function ResultsHeader({
                   jobId={jobId}
                   job={job}
                   statusError={statusError}
+                  statusErrorCode={statusErrorCode}
                 />
                 {job && onTogglePublic && (
                   <>
@@ -296,6 +302,7 @@ export function ResultsHeader({
                   jobId={jobId}
                   job={job}
                   statusError={statusError}
+                  statusErrorCode={statusErrorCode}
                 />
               </PopoverContent>
             </Popover>

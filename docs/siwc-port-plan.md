@@ -1,6 +1,35 @@
 # Plan: Sign in with ChatGPT + plan-billed audits for EVM Bench
 
-Status: proposal · Last updated: 2026-10-02
+Status: implemented (Phases 1–7), Phase 0 pending a real ChatGPT account · Last updated: 2026-10-02
+
+## 0. Implementation status
+
+Phases 1–7 are implemented. Phase 0 (a real audit billed to a real ChatGPT plan) still needs a ChatGPT
+account and must be done before relying on this in production.
+
+Verified locally against a fake OpenAI server, with the real API, oai_proxy, secretsvc, resultsvc, worker
+`init.py`, Codex CLI 0.155.1, and Postgres 16. Only RabbitMQ was stubbed. These worked:
+- dynamic registration with PKCE, nonce, `ext_agent_host_id` and `agent_name_hint`;
+- ID-token verification against JWKS;
+- credential storage;
+- returning sign-in with `id_token_hint` and the issued client ID;
+- revocation on sign-out;
+- plan model list merging;
+- a plan-billed job: Codex ran a full turn through the broker, which injected and refreshed the real access token;
+- a mid-stream `subscription_sharing_usage_limit_exceeded` recorded on the job and shown in the UI.
+
+What the local run found, and what Phase 0 must still check against the real API:
+
+| Finding | Status |
+|---|---|
+| Codex 0.155.1 accepts the `openai_chatgpt_plan` provider config with `codex exec` (no `app-server` needed). | Verified locally |
+| Codex sends its function tools (`exec_command`, `write_stdin`, `view_image`, …) **top-level**, plus one `namespace` tool. The preview says function tools must be in namespaces or `additional_tools`. | **Top risk:** check against the real API. If rejected, either a newer Codex groups them, or the proxy must rewrite tools and tool-call names. |
+| Codex also sends `include: ["reasoning.encrypted_content"]`, `prompt_cache_key`, `client_metadata`, `parallel_tool_calls`, `reasoning.summary`. Not on the documented disallowed list, so they are passed through. | Check against the real API |
+| Codex warns "Model metadata … not found" for discovered (non-curated) slugs and uses fallback metadata. | Expected; curated models are unaffected |
+| Codex never called `GET /v1/models` or `/responses/compact` through the proxy during a turn. | Verified locally; long-running auto-compaction is not exercised |
+| `earliest_refresh_at` format is undocumented; both epoch seconds and ISO 8601 are accepted. | Check |
+| Field names for reasoning levels in the plan model list are undocumented; `supported_reasoning_levels` (Codex-style) and `reasoning_efforts` are accepted, else curated levels or `low/medium/high`. | Check |
+| The "Manage usage" URL is configurable (`SIWC_MANAGE_USAGE_URL`, default `https://chatgpt.com/#settings`) because the docs don't give a deep link. | Check |
 
 ## 1. Goal
 

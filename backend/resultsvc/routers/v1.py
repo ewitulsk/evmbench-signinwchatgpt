@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from loguru import logger
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.job import Job, JobStatus
@@ -20,6 +20,8 @@ class ReportPayload(BaseModel):
     status: Literal['succeeded', 'failed']
     report: str | None = None
     error: str | None = None
+    # Machine-readable failure reason detected by the worker (e.g. usage_limit_exceeded).
+    error_code: str | None = Field(default=None, max_length=64, pattern=r'^[a-z0-9_]+$')
 
     @model_validator(mode='after')
     def _validate_report(self) -> 'ReportPayload':
@@ -128,6 +130,9 @@ async def submit_result(
     job.finished_at = now
     job.result = loaded_report
     job.result_error = payload.error
+    if job.status == JobStatus.failed and payload.error_code and not job.error_code:
+        # oai_proxy may already have recorded a more precise code; the first one wins.
+        job.error_code = payload.error_code
     job.result_received_at = now
     logger.info(f'Updated job {job.id} status to {job.status}')
     return {'status': 'ok'}

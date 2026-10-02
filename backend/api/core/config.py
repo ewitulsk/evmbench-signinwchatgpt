@@ -45,7 +45,26 @@ class Settings(BaseSettings):
     # How to pass OpenAI credentials to the worker.
     # - direct: worker receives plaintext OPENAI_API_KEY (default for OSS)
     # - proxy: worker receives encrypted token; oai_proxy decrypts and forwards upstream
-    BACKEND_OAI_KEY_MODE: Literal['direct', 'proxy'] = 'direct'
+    # - siwc: like proxy for API keys, plus ChatGPT-plan billed jobs (requires AUTH_BACKEND=chatgpt);
+    #   the worker receives a job-bound token and oai_proxy injects the user's ChatGPT access token
+    BACKEND_OAI_KEY_MODE: Literal['direct', 'proxy', 'siwc'] = 'direct'
+
+    # Encrypts stored ChatGPT OAuth tokens. Required when AUTH_BACKEND=chatgpt; shared with oai_proxy.
+    CREDENTIALS_AES_KEY: Secret[str] | None = None
+    # Upper bound for a ChatGPT-plan job token (queue time + audit runtime). oai_proxy also requires
+    # the job to be running, so this is a backstop.
+    BACKEND_SIWC_JOB_TOKEN_TTL_SECONDS: int = 24 * 60 * 60
+    # Allow users to pick "Use an API key" when ChatGPT-plan billing is available.
+    BACKEND_API_KEY_MODE_ENABLED: bool = True
+    SIWC_MANAGE_USAGE_URL: str = 'https://chatgpt.com/#settings'
+    SIWC_LEARN_MORE_URL: str = 'https://help.openai.com/en/articles/20001410-sign-in-with-chatgpt'
+
+    # Auto-populate the model picker from OpenAI's model list.
+    # - off: curated models only
+    # - plan_only: ChatGPT-plan users see their plan's catalog (default)
+    # - all: API-key users also get newer models, discovered by name from /v1/models
+    BACKEND_MODEL_DISCOVERY: Literal['off', 'plan_only', 'all'] = 'plan_only'
+    BACKEND_MODEL_CATALOG_TTL_SECONDS: int = 10 * 60
 
     # Shared credentials require an explicit opt-in on both the API and proxy.
     OAI_SHARED_KEY_ENABLED: bool = False
@@ -96,6 +115,20 @@ class Settings(BaseSettings):
         if limit is not None and limit > 0:
             self.RABBITMQ_QUEUE_SUFFIX = 'limited'
         return self
+
+    @model_validator(mode='after')
+    def _require_siwc_settings(self) -> 'Settings':
+        if self.AUTH_BACKEND == 'chatgpt' and self.CREDENTIALS_AES_KEY is None:
+            msg = 'CREDENTIALS_AES_KEY must be set when AUTH_BACKEND=chatgpt'
+            raise ValueError(msg)
+        if self.BACKEND_OAI_KEY_MODE == 'siwc' and self.AUTH_BACKEND != 'chatgpt':
+            msg = 'BACKEND_OAI_KEY_MODE=siwc requires AUTH_BACKEND=chatgpt'
+            raise ValueError(msg)
+        return self
+
+    @property
+    def plan_usage_enabled(self) -> bool:
+        return self.AUTH_BACKEND == 'chatgpt' and self.BACKEND_OAI_KEY_MODE == 'siwc'
 
     @property
     def rabbitmq_queue_name(self) -> str:

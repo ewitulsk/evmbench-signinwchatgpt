@@ -96,6 +96,11 @@ services:
       OAI_PROXY_PORT: 8084
       # Required only when running with profile "proxy"
       OAI_PROXY_AES_KEY: ${OAI_PROXY_AES_KEY:-}
+      # ChatGPT-plan jobs (BACKEND_OAI_KEY_MODE=siwc): the proxy checks jobs and refreshes stored tokens
+      DATABASE_DSN: postgresql+asyncpg://${POSTGRES_USER:-evmbench}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-evmbench}
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8084:8084"
     networks:
@@ -103,6 +108,7 @@ services:
         aliases:
           - oai.loc
       app:
+      db:
 
   backend:
     image: evmbench/backend:latest

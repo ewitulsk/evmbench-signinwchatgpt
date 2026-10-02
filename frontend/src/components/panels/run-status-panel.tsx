@@ -1,10 +1,14 @@
 "use client"
 
+import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons"
+import { HugeiconsIcon } from "@hugeicons/react"
 import { useMemo } from "react"
-import { JobStatusBadge } from "@/components/results"
+import { JobErrorNotice, JobStatusBadge } from "@/components/results"
+import { useAuth } from "@/hooks/use-auth"
 import { useNow } from "@/hooks/use-now"
 import { isJobActive } from "@/lib/job-status"
 import type { JobResponse } from "@/lib/jobs"
+import { jobModelLabel } from "@/lib/models"
 import { formatDateTime, formatElapsed } from "@/lib/time"
 
 interface RunStatusPanelProps {
@@ -17,6 +21,7 @@ export function RunStatusPanel({
   isLoading = false,
 }: RunStatusPanelProps) {
   const now = useNow(1000)
+  const { manageUsageUrl } = useAuth()
 
   const startTimestamp = useMemo(() => {
     const value = job?.started_at ?? job?.created_at
@@ -65,7 +70,28 @@ export function RunStatusPanel({
             <span className="text-muted-foreground">Elapsed</span>
             <span className="text-foreground tabular-nums">{elapsedLabel}</span>
             <span className="text-muted-foreground">Model</span>
-            <span className="text-foreground">{job?.model ?? "—"}</span>
+            <span className="text-foreground">{jobModelLabel(job)}</span>
+            {job?.billing_source === "chatgpt_plan" && (
+              <>
+                <span className="text-muted-foreground">Billing</span>
+                <span className="flex items-center gap-2 text-foreground">
+                  ChatGPT plan
+                  <a
+                    href={manageUsageUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-0.5 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    Manage usage
+                    <HugeiconsIcon
+                      icon={ArrowUpRight01Icon}
+                      strokeWidth={2}
+                      className="size-3"
+                    />
+                  </a>
+                </span>
+              </>
+            )}
             <span className="text-muted-foreground">File</span>
             <span className="text-foreground truncate">
               {job?.file_name ?? "—"}
@@ -87,6 +113,9 @@ export function RunStatusPanel({
               </>
             )}
           </div>
+          {job?.error_code && (
+            <JobErrorNotice errorCode={job.error_code} fallback={job.error} />
+          )}
         </div>
       </div>
     </div>

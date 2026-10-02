@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import File, Form, HTTPException, UploadFile
@@ -14,9 +14,11 @@ from api.util.zip_validate import validate_upload_zip
 class StartJobForm(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
     reasoning_effort: str = 'medium'
     openai_key: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=1)]
+    # Resolved by `resolve_billing_source`: an explicit choice, else api_key when a key was sent.
+    billing_source: Literal['api_key', 'chatgpt_plan'] | None = None
     file: UploadFile
 
     @classmethod
@@ -26,11 +28,14 @@ class StartJobForm(BaseModel):
         file: Annotated[UploadFile, File()],
         openai_key: Annotated[str | None, Form()] = None,
         reasoning_effort: Annotated[str | None, Form()] = None,
+        billing_source: Annotated[str | None, Form()] = None,
     ) -> 'StartJobForm':
         try:
             return cls(
                 model=model,
                 openai_key=openai_key,
+                # Validated by the Literal field below.
+                billing_source=cast('Any', billing_source or None),
                 file=file,
                 reasoning_effort=reasoning_effort if reasoning_effort is not None else 'medium',
             )
@@ -60,7 +65,27 @@ class StartJobForm(BaseModel):
         return self
 
     @model_validator(mode='after')
-    def require_openai_key(self) -> 'StartJobForm':
+    def resolve_billing_source(self) -> 'StartJobForm':
+        # Billing is never switched implicitly: plan usage is used only when chosen (or when no key is sent
+        # on a deployment that offers it), and failures never fall back to another credential.
+        if self.billing_source is None:
+            if not self.openai_key and settings.plan_usage_enabled:
+                self.billing_source = 'chatgpt_plan'
+            else:
+                self.billing_source = 'api_key'
+
+        if self.billing_source == 'chatgpt_plan':
+            if not settings.plan_usage_enabled:
+                msg = 'ChatGPT plan usage is not enabled on this deployment'
+                raise ValueError(msg)
+            if self.openai_key:
+                msg = 'openai_key must not be sent when billing to your ChatGPT plan'
+                raise ValueError(msg)
+            return self
+
+        if settings.plan_usage_enabled and not settings.BACKEND_API_KEY_MODE_ENABLED:
+            msg = 'API keys are disabled on this deployment; use your ChatGPT plan'
+            raise ValueError(msg)
         # Skip validation if using proxy's static key or backend's static key
         if settings.BACKEND_USE_PROXY_STATIC_KEY:
             return self
@@ -113,7 +138,10 @@ class JobStatusResponse(BaseModel):
     status: JobStatus
     result: dict | None
     error: str | None = Field(validation_alias='result_error')
+    error_code: str | None = None
     model: str
+    model_display_name: str | None = None
+    billing_source: str | None = None
     reasoning_effort: str | None = None
     file_name: str
     public: bool

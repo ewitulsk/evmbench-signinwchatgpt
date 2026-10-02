@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from http import HTTPStatus
 from urllib.parse import quote, urlencode
 
@@ -6,7 +7,7 @@ from httpx import AsyncClient, Response
 
 from api.core.tokens import Token
 
-from .abc import AuthBackendABC
+from .abc import AuthBackendABC, AuthContext, AuthorizationRequest, AuthResult
 
 
 def get_json(in_response: Response) -> dict[str, str] | None:
@@ -25,6 +26,8 @@ def get_json(in_response: Response) -> dict[str, str] | None:
 
 
 class GithubAuthBackend(AuthBackendABC):
+    provider = 'github'
+
     def __init__(self, args: dict[str, str]) -> None:
         super().__init__(args)
         self._client_id = self._args.get('client_id')
@@ -34,17 +37,28 @@ class GithubAuthBackend(AuthBackendABC):
             msg = 'Client id or secret is not set'
             raise ValueError(msg)
 
-    async def get_redirect_url(self, state: str, redirect_uri: str) -> str:
+    async def begin(self, context: AuthContext) -> AuthorizationRequest:
         qs = urlencode(
             query={
                 'client_id': self._client_id,
-                'redirect_uri': redirect_uri,
-                'state': state,
+                'redirect_uri': context.redirect_uri,
+                'state': context.state,
                 # no scopes are needed
             },
             quote_via=quote,
         )
-        return f'https://github.com/login/oauth/authorize?{qs}'
+        return AuthorizationRequest(url=f'https://github.com/login/oauth/authorize?{qs}')
+
+    async def complete(
+        self,
+        *,
+        code: str,
+        params: Mapping[str, str],  # noqa: ARG002
+        transaction: Mapping[str, str],  # noqa: ARG002
+        redirect_uri: str,  # noqa: ARG002
+    ) -> AuthResult | None:
+        token = await self.get_token(code)
+        return AuthResult(token=token) if token else None
 
     async def get_token(self, code: str) -> Token | None:
         async with AsyncClient() as client:
@@ -80,4 +94,5 @@ class GithubAuthBackend(AuthBackendABC):
                 user_id=str(r['id']),
                 login=r['login'],
                 avatar_url=r.get('avatar_url'),
+                provider='github',
             )

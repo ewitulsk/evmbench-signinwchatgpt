@@ -15,6 +15,8 @@ class Token(BaseModel):
     user_id: str
     login: str
     avatar_url: str | None
+    # github | chatgpt | local. Sessions issued before providers existed are GitHub sessions.
+    provider: str = 'github'
 
 
 class TokenClaims(Token):

@@ -1,31 +1,21 @@
-from collections.abc import Iterable
 from functools import lru_cache
 from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from starlette.background import BackgroundTask
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
+from api.siwc.job_token import is_job_token
 from api.util.aes_gcm import decrypt_token, derive_key
 from oai_proxy.core.config import settings
+from oai_proxy.core.headers import filter_headers
+from oai_proxy.siwc import proxy_siwc_request
 
 
 OPENAI_BASE_URL = 'https://api.openai.com'
 # Marker token that triggers use of the static key
 STATIC_KEY_MARKER = 'STATIC'
-HOP_BY_HOP_HEADERS = {
-    'connection',
-    'host',
-    'keep-alive',
-    'proxy-authenticate',
-    'proxy-authorization',
-    'te',
-    'trailers',
-    'transfer-encoding',
-    'upgrade',
-}
-
 router = APIRouter()
 
 
@@ -75,22 +65,17 @@ def _get_authorization_token(request: Request) -> str:
     return token
 
 
-def _filter_headers(items: Iterable[tuple[str, str]]) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for key, value in items:
-        key_lower = key.lower()
-        if key_lower in HOP_BY_HOP_HEADERS:
-            continue
-        if key_lower == 'content-length':
-            continue
-        headers[key_lower] = value
-    return headers
-
-
-async def _proxy_request(request: Request, path: str) -> StreamingResponse:
+async def _proxy_request(request: Request, path: str) -> Response:
     token = _get_authorization_token(request)
+    if is_job_token(token):
+        siwc_headers = filter_headers(request.headers.items())
+        # Uncompressed responses let the broker spot subscription-sharing errors in the stream
+        # (httpx would otherwise default to gzip).
+        siwc_headers['accept-encoding'] = 'identity'
+        return await proxy_siwc_request(request, path, token, siwc_headers)
+
     openai_key = _resolve_openai_key(token)
-    forward_headers = _filter_headers(request.headers.items())
+    forward_headers = filter_headers(request.headers.items())
     forward_headers['authorization'] = f'Bearer {openai_key}'
 
     target_path = path.lstrip('/')
@@ -112,7 +97,7 @@ async def _proxy_request(request: Request, path: str) -> StreamingResponse:
         stream=True,
     )
 
-    response_headers = _filter_headers(upstream.headers.items())
+    response_headers = filter_headers(upstream.headers.items())
 
     async def _cleanup() -> None:
         await upstream.aclose()
@@ -128,5 +113,5 @@ async def _proxy_request(request: Request, path: str) -> StreamingResponse:
 
 @router.api_route('/', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'])
 @router.api_route('/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'])
-async def proxy_all(request: Request, path: str = '') -> StreamingResponse:
+async def proxy_all(request: Request, path: str = '') -> Response:
     return await _proxy_request(request, path)

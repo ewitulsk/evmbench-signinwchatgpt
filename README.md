@@ -62,6 +62,7 @@ OpenAI credential handling:
 
 - **Direct BYOK (default)**: worker receives a plaintext OpenAI key (`OPENAI_API_KEY` / `CODEX_API_KEY`).
 - **Proxy-token mode (optional)**: worker receives an opaque token and routes requests through `oai_proxy` (plaintext key stays outside the worker).
+- **Sign in with ChatGPT (optional)**: users sign in with ChatGPT and can bill audits to their ChatGPT plan. The worker receives a job-bound token; `oai_proxy` swaps it for the user's ChatGPT access token and refreshes it as needed. See [Sign in with ChatGPT](#sign-in-with-chatgpt).
 
 Enabling proxy-token mode:
 
@@ -72,6 +73,28 @@ cp .env.example .env
 docker compose --profile proxy up -d --build
 ```
 
+### Sign in with ChatGPT
+
+[Sign in with ChatGPT](https://developers.openai.com/siwc) lets users sign in with their ChatGPT account and run audits against their ChatGPT plan's usage instead of an API key. API keys remain available as an explicit per-run choice; EVM Bench never switches billing on its own.
+
+```bash
+cd backend
+cp .env.example .env
+# set:
+#   AUTH_BACKEND=chatgpt
+#   AUTH_BACKEND_ARGUMENTS='{"mode":"dynamic"}'
+#   BACKEND_OAI_KEY_MODE=siwc
+#   CREDENTIALS_AES_KEY=...  OAI_PROXY_AES_KEY=...  OAI_PROXY_BASE_URL=http://oai.loc:8084
+docker compose --profile proxy up -d --build
+```
+
+- `dynamic` mode is OpenAI's open-source/self-hosted path: no client ID is needed, each ChatGPT account is registered on first sign-in, and the OAuth callback must be an HTTP loopback address (`BACKEND_PUBLIC_URL=http://127.0.0.1:1337`, the default).
+- Hosted, multi-user deployments need a client issued by OpenAI ([interest form](https://openai.com/form/sign-in-with-chatgpt-interest/)); use `{"mode":"registered","client_id":"...","client_secret":"..."}`.
+- The model picker lists the models on the user's plan. `BACKEND_MODEL_DISCOVERY=all` also adds newer models to the picker for API-key users (`off` shows curated models only).
+- Plan usage is subject to the user's ChatGPT limits; failures such as `usage_limit_exceeded` are shown on the run with a "Manage usage" link.
+
+Design notes and open questions: [`docs/siwc-port-plan.md`](docs/siwc-port-plan.md).
+
 Operational note: worker runtime is bounded by default; override the max audit runtime with `EVM_BENCH_CODEX_TIMEOUT_SECONDS` (default: 10800 seconds).
 
 ## Key services
@@ -81,7 +104,7 @@ Operational note: worker runtime is bounded by default; override the max audit r
 | `backend` | 1337 | Main API: job submission, status, history, auth |
 | `secretsvc` | 8081 | Stores and serves per-job secret bundles (zip + key material) |
 | `resultsvc` | 8083 | Receives worker results, validates/parses, persists to DB |
-| `oai_proxy` | 8084 | Optional OpenAI proxy for proxy-token mode |
+| `oai_proxy` | 8084 | Optional OpenAI proxy for proxy-token mode and ChatGPT-plan token brokering |
 | `instancer` | (n/a) | RabbitMQ consumer that starts worker containers/pods |
 | `worker` | (n/a) | Executes the detect-only agent and uploads results |
 | Postgres | 5432 | Job state persistence |
@@ -101,7 +124,7 @@ Operational note: worker runtime is bounded by default; override the max audit r
 │   ├── instancer/            RabbitMQ consumer; starts workers (Docker/K8s)
 │   ├── secretsvc/            Bundle storage service
 │   ├── resultsvc/            Results ingestion + persistence
-│   ├── oai_proxy/            Optional OpenAI proxy (proxy-token mode)
+│   ├── oai_proxy/            Optional OpenAI proxy (proxy-token mode, ChatGPT-plan broker)
 │   ├── prunner/              Optional cleanup of stale workers
 │   ├── worker_runner/        Detect prompt + model map + Codex runner script
 │   ├── docker/
