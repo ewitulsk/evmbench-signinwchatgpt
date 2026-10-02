@@ -981,6 +981,29 @@ class WorkerSiwcTests(unittest.TestCase):
             self.assertIn('requires_openai_auth = false', config)
             self.assertIn('supports_websockets = false', config)
 
+    def test_failure_summary_reads_codex_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            (logs / 'agent.log').write_text(
+                '\n'.join(
+                    json.dumps(event)
+                    for event in (
+                        {'type': 'thread.started'},
+                        {'type': 'item.completed', 'item': {'type': 'error', 'message': 'Model metadata for x'}},
+                        {'type': 'error', 'message': 'unexpected status 400 Bad Request: tools must be namespaced'},
+                        {'type': 'turn.failed', 'error': {'message': 'unexpected status 400 Bad Request: tools'}},
+                    )
+                ),
+            )
+            with patch.object(worker, 'LOGS_DIR', logs):
+                summary = worker._agent_failure_summary()
+            self.assertIn('tools must be namespaced', summary)
+            self.assertNotIn('Model metadata', summary)
+
+            (logs / 'agent.log').write_text('Error: config.toml: unknown field\n')
+            with patch.object(worker, 'LOGS_DIR', logs):
+                self.assertEqual(worker._agent_failure_summary(), 'Error: config.toml: unknown field')
+
     def test_error_code_from_agent_log(self) -> None:
         self.assertEqual(
             worker._find_error_code('stream error: subscription_sharing_usage_limit_exceeded: limit'),

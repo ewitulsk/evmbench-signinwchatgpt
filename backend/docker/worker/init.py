@@ -94,6 +94,36 @@ def _find_error_code(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _agent_failure_summary(limit: int = 1000) -> str:
+    """Last error Codex reported in agent.log (its `--json` event stream), for the job's error message."""
+    try:
+        lines = (LOGS_DIR / 'agent.log').read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return ''
+
+    fatal: list[str] = []
+    other: list[str] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get('type') == 'turn.failed' and isinstance(event.get('error'), dict):
+            fatal.append(str(event['error'].get('message') or ''))
+        elif event.get('type') == 'error':
+            fatal.append(str(event.get('message') or ''))
+        elif isinstance(event.get('item'), dict) and event['item'].get('type') == 'error':
+            other.append(str(event['item'].get('message') or ''))
+
+    messages = [m for m in fatal if m] or [m for m in other if m and 'Model metadata' not in m]
+    if not messages and lines:
+        # Not JSON (e.g. Codex failed before starting): fall back to the raw tail.
+        messages = [line for line in lines[-5:] if line.strip()]
+    return '\n'.join(dict.fromkeys(messages))[-limit:]
+
+
 def _agent_error_code() -> str | None:
     try:
         return _find_error_code((LOGS_DIR / 'agent.log').read_text(encoding='utf-8', errors='replace'))
@@ -237,7 +267,8 @@ def _run_codex_detect(*, openai_token: str, key_mode: str) -> Path:
     )
     (LOGS_DIR / 'runner.log').write_text(proc.stdout or '', encoding='utf-8')
     if proc.returncode != 0:
-        msg = f'Codex runner failed with code={proc.returncode}:\n{proc.stdout}'
+        detail = (proc.stdout or '').strip() or _agent_failure_summary()
+        msg = f'Codex runner failed with code={proc.returncode}:\n{detail}'
         raise RuntimeError(msg)
 
     audit_md_path = SUBMISSION_DIR / 'audit.md'
